@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     # App
     APP_ENV: str = "development"
     APP_DEBUG: bool = False
+    ATTENDANCE_MARK_PAST_DAYS_LIMIT: int = 7
 
     @property
     def DATABASE_URL(self) -> str:

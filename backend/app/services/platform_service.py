@@ -4,8 +4,9 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.security import (
@@ -160,6 +161,7 @@ class PlatformService:
     async def list_companies(self, db: AsyncSession) -> dict:
         result = await db.execute(
             select(Company)
+            .options(selectinload(Company.contacts))
             .where(Company.deleted_at.is_(None))
             .order_by(Company.created_at.desc())
         )
@@ -204,15 +206,16 @@ class PlatformService:
         )
         db.add(contact)
         await db.commit()
-        await db.refresh(company)
-
+        company = await self._get_company_with_contacts(db, company.id)
         return await self._company_response(db, company)
 
     async def get_company(
         self, db: AsyncSession, company_id: uuid.UUID
     ) -> CompanyResponse:
         result = await db.execute(
-            select(Company).where(
+            select(Company)
+            .options(selectinload(Company.contacts))
+            .where(
                 Company.id == company_id, Company.deleted_at.is_(None)
             )
         )
@@ -225,7 +228,9 @@ class PlatformService:
         self, db: AsyncSession, company_id: uuid.UUID, body: CompanyUpdateRequest
     ) -> CompanyResponse:
         result = await db.execute(
-            select(Company).where(
+            select(Company)
+            .options(selectinload(Company.contacts))
+            .where(
                 Company.id == company_id, Company.deleted_at.is_(None)
             )
         )
@@ -241,8 +246,24 @@ class PlatformService:
         company.status = body.status
 
         await db.commit()
-        await db.refresh(company)
+        company = await self._get_company_with_contacts(db, company.id)
         return await self._company_response(db, company)
+
+    async def _get_company_with_contacts(
+        self, db: AsyncSession, company_id: uuid.UUID
+    ) -> Company:
+        result = await db.execute(
+            select(Company)
+            .options(selectinload(Company.contacts))
+            .where(
+                Company.id == company_id,
+                Company.deleted_at.is_(None),
+            )
+        )
+        company = result.scalar_one_or_none()
+        if company is None:
+            raise ValueError("Company not found")
+        return company
 
     async def _company_response(
         self, db: AsyncSession, company: Company
@@ -404,15 +425,16 @@ class PlatformService:
         if result.scalar_one_or_none() is None:
             raise ValueError("Company not found")
 
-        # Remove all existing company features
-        existing = await db.execute(
-            select(CompanyFeature).where(CompanyFeature.company_id == company_id)
+        feature_ids = list(dict.fromkeys(body.feature_ids))
+
+        # Remove all existing company features before inserting replacements
+        await db.execute(
+            delete(CompanyFeature).where(CompanyFeature.company_id == company_id)
         )
-        for cf in existing.scalars().all():
-            await db.delete(cf)
+        await db.flush()
 
         # Add new features
-        for feature_id in body.feature_ids:
+        for feature_id in feature_ids:
             db.add(CompanyFeature(company_id=company_id, feature_id=feature_id, enabled=True))
 
         await db.commit()

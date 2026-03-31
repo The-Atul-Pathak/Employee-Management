@@ -145,3 +145,24 @@ async def terminate_session(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_user(
+    user_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[dict, Depends(require_admin)],
+) -> Response:
+    try:
+        await user_service.delete_user(
+            db=db,
+            company_id=current_user["company_id"],
+            user_id=user_id,
+            actor_user_id=current_user["user_id"],
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

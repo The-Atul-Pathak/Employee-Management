@@ -1,12 +1,17 @@
 """Alembic environment configuration."""
 
 import asyncio
+import sys
 from logging.config import fileConfig
+from pathlib import Path
 
 from sqlalchemy import engine_from_config, pool
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from alembic import context
+
+# Add the app directory to the path so imports work
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Import all models to make them available for autogenerate
 from app.models.base import Base
@@ -23,6 +28,30 @@ from app.models import (  # noqa: F401
     UserProfile,
     UserRole,
     UserSession,
+    Attendance,
+    LeaveBalance,
+    LeaveRequest,
+    LeaveStatus,
+    LeaveType,
+    Project,
+    ProjectTask,
+    TaskStatus,
+    TaskUpdate,
+    ProjectPlanning,
+    ProjectStatus,
+    ProjectStatusLog,
+    Team,
+    TeamMember,
+    TeamStatus,
+    Lead,
+    LeadInteraction,
+    LeadStatus,
+    Plan,
+    CompanySubscription,
+    BillingCycle,
+    Notification,
+    AttendanceStatus,
+    CompanyFeature,
 )
 from app.core.config import settings
 

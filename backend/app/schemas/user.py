@@ -31,7 +31,7 @@ class UserListItem(BaseModel):
     email: EmailStr | None
     status: UserStatus
     is_company_admin: bool
-    roles: list[str]
+    roles: list[UserRoleResponse]
 
 
 class PaginationMeta(BaseModel):
@@ -56,8 +56,10 @@ class UserCreateRequest(BaseModel):
 
 
 class UserUpdateRequest(BaseModel):
+    emp_id: str = Field(min_length=1, max_length=50)
     name: str = Field(min_length=1, max_length=255)
     email: EmailStr | None = None
+    password: str | None = Field(default=None, min_length=8, max_length=255)
     status: UserStatus
     is_company_admin: bool = False
     role_ids: list[uuid.UUID] = Field(default_factory=list)

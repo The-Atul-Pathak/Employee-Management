@@ -64,15 +64,21 @@ class UserService:
         user_ids = [user.id for user in users]
 
         roles_by_user: dict[uuid.UUID, list[str]] = {user_id: [] for user_id in user_ids}
+        role_details_by_user: dict[uuid.UUID, list[UserRoleResponse]] = {
+            user_id: [] for user_id in user_ids
+        }
         if user_ids:
             roles_stmt = (
-                select(UserRole.user_id, Role.name)
+                select(UserRole.user_id, Role.id, Role.name)
                 .join(Role, Role.id == UserRole.role_id)
                 .where(UserRole.user_id.in_(user_ids))
                 .order_by(Role.name.asc())
             )
-            for user_id, role_name in (await db.execute(roles_stmt)).all():
+            for user_id, role_id, role_name in (await db.execute(roles_stmt)).all():
                 roles_by_user.setdefault(user_id, []).append(role_name)
+                role_details_by_user.setdefault(user_id, []).append(
+                    UserRoleResponse(id=role_id, name=role_name)
+                )
 
         total_pages = math.ceil(total / per_page) if total else 0
         return UserListResponse(
@@ -84,7 +90,7 @@ class UserService:
                     email=user.email,
                     status=user.status,
                     is_company_admin=user.is_company_admin,
-                    roles=[] if user.is_company_admin else roles_by_user.get(user.id, []),
+                    roles=[] if user.is_company_admin else role_details_by_user.get(user.id, []),
                 )
                 for user in users
             ],
@@ -146,6 +152,11 @@ class UserService:
     ) -> User:
         user = await self._get_user_or_404(db, company_id, user_id)
 
+        if data.emp_id != user.emp_id:
+            existing_emp_id = await self._get_user_by_emp_id(db, company_id, data.emp_id)
+            if existing_emp_id is not None and existing_emp_id.id != user_id:
+                raise ValueError("Employee ID already exists")
+
         if data.email and data.email != user.email:
             existing_email = await self._get_user_by_email(db, company_id, data.email)
             if existing_email is not None and existing_email.id != user_id:
@@ -155,8 +166,11 @@ class UserService:
             db, company_id, [] if data.is_company_admin else data.role_ids
         )
 
+        user.emp_id = data.emp_id
         user.name = data.name
         user.email = data.email
+        if data.password:
+            user.password_hash = hash_password(data.password)
         user.status = data.status
         user.is_company_admin = data.is_company_admin
 
@@ -167,6 +181,29 @@ class UserService:
         await db.flush()
         await db.refresh(user)
         return user
+
+    async def delete_user(
+        self,
+        db: AsyncSession,
+        company_id: uuid.UUID,
+        user_id: uuid.UUID,
+        actor_user_id: uuid.UUID,
+    ) -> None:
+        if user_id == actor_user_id:
+            raise ValueError("You cannot delete your own account")
+
+        user = await self._get_user_or_404(db, company_id, user_id)
+        suffix = user.id.hex[:8]
+
+        user.status = UserStatus.terminated
+        user.deleted_at = datetime.now(timezone.utc)
+        user.emp_id = f"deleted-{suffix}"
+        if user.email:
+            user.email = f"deleted+{suffix}@deleted.local"
+
+        await db.execute(delete(UserRole).where(UserRole.user_id == user_id))
+        await db.execute(delete(UserSession).where(UserSession.user_id == user_id))
+        await db.flush()
 
     async def get_user_profile(
         self,
