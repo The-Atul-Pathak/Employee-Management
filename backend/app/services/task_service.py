@@ -290,8 +290,8 @@ class TaskService:
         await db.flush()
         await db.refresh(task)
 
-        # Notify the assignee of approval/rejection
-        if task.assigned_to is not None:
+        # Notify the suggester (creator) of approval/rejection
+        if task.created_by is not None:
             notif_type = NotificationType.task_approved if approve else NotificationType.task_rejected
             notif_title = "Task Approved" if approve else "Task Rejected"
             notif_msg = (
@@ -300,7 +300,7 @@ class TaskService:
             await _get_notification_service().create_notification(
                 db=db,
                 company_id=company_id,
-                user_id=task.assigned_to,
+                user_id=task.created_by,
                 title=notif_title,
                 message=notif_msg,
                 notification_type=notif_type,

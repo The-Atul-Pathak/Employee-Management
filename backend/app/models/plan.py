@@ -5,7 +5,7 @@ from decimal import Decimal
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, func
+from sqlalchemy import Boolean, DateTime, Date, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy import Enum as PgEnum
@@ -30,6 +30,34 @@ class Plan(BaseModel):
     subscriptions: Mapped[list["CompanySubscription"]] = relationship(
         "CompanySubscription", back_populates="plan", lazy="select"
     )
+    plan_features: Mapped[list["PlanFeature"]] = relationship(
+        "PlanFeature", back_populates="plan", lazy="select", cascade="all, delete-orphan"
+    )
+
+
+class PlanFeature(Base):
+    __tablename__ = "plan_features"
+    __table_args__ = (
+        UniqueConstraint("plan_id", "feature_id", name="uq_plan_features_plan_feature"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True
+    )
+    plan_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("plans.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    feature_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("features.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    plan: Mapped["Plan"] = relationship("Plan", back_populates="plan_features")
 
 
 class CompanySubscription(Base):

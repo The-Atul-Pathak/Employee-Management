@@ -1,7 +1,7 @@
 from __future__ import annotations
 import hashlib
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import delete, func, select
@@ -16,15 +16,14 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
-from app.models.access import CompanyFeature, Feature
+from app.models.access import Feature
 from app.models.company import Company, CompanyContact, CompanyStatus
-from app.models.plan import BillingCycle, CompanySubscription, Plan
+from app.models.plan import BillingCycle, CompanySubscription, Plan, PlanFeature
 from app.models.platform_admin import PlatformAdmin, PlatformAdminStatus, PlatformSession
 from app.models.user import User, UserStatus
 from app.schemas.platform import (
     CompanyAdminCreateRequest,
     CompanyCreateRequest,
-    CompanyFeaturesUpdateRequest,
     CompanyListItem,
     CompanyResponse,
     ContactResponse,
@@ -33,9 +32,9 @@ from app.schemas.platform import (
     FeatureListResponse,
     FeatureResponse,
     FeatureUpdateRequest,
-    FeatureUsageItem,
     PlanCreateRequest,
     PlanDeleteCheckResponse,
+    PlanFeatureItem,
     PlanListResponse,
     PlanResponse,
     PlanUpdateRequest,
@@ -215,9 +214,7 @@ class PlatformService:
         result = await db.execute(
             select(Company)
             .options(selectinload(Company.contacts))
-            .where(
-                Company.id == company_id, Company.deleted_at.is_(None)
-            )
+            .where(Company.id == company_id, Company.deleted_at.is_(None))
         )
         company = result.scalar_one_or_none()
         if company is None:
@@ -230,9 +227,7 @@ class PlatformService:
         result = await db.execute(
             select(Company)
             .options(selectinload(Company.contacts))
-            .where(
-                Company.id == company_id, Company.deleted_at.is_(None)
-            )
+            .where(Company.id == company_id, Company.deleted_at.is_(None))
         )
         company = result.scalar_one_or_none()
         if company is None:
@@ -255,10 +250,7 @@ class PlatformService:
         result = await db.execute(
             select(Company)
             .options(selectinload(Company.contacts))
-            .where(
-                Company.id == company_id,
-                Company.deleted_at.is_(None),
-            )
+            .where(Company.id == company_id, Company.deleted_at.is_(None))
         )
         company = result.scalar_one_or_none()
         if company is None:
@@ -288,7 +280,6 @@ class PlatformService:
                 plan_name=plan.name,
                 billing_cycle=cs.billing_cycle,
                 start_date=cs.start_date,
-                end_date=cs.end_date,
                 is_active=cs.is_active,
             )
 
@@ -323,9 +314,7 @@ class PlatformService:
         body: CompanyAdminCreateRequest,
     ) -> dict:
         result = await db.execute(
-            select(Company).where(
-                Company.id == company_id, Company.deleted_at.is_(None)
-            )
+            select(Company).where(Company.id == company_id, Company.deleted_at.is_(None))
         )
         if result.scalar_one_or_none() is None:
             raise ValueError("Company not found")
@@ -363,9 +352,7 @@ class PlatformService:
         body: SubscriptionUpsertRequest,
     ) -> SubscriptionResponse:
         result = await db.execute(
-            select(Company).where(
-                Company.id == company_id, Company.deleted_at.is_(None)
-            )
+            select(Company).where(Company.id == company_id, Company.deleted_at.is_(None))
         )
         if result.scalar_one_or_none() is None:
             raise ValueError("Company not found")
@@ -392,7 +379,6 @@ class PlatformService:
             plan_id=body.plan_id,
             billing_cycle=body.billing_cycle,
             start_date=body.start_date,
-            end_date=body.end_date,
             is_active=True,
         )
         db.add(new_sub)
@@ -405,50 +391,8 @@ class PlatformService:
             plan_name=plan.name,
             billing_cycle=new_sub.billing_cycle,
             start_date=new_sub.start_date,
-            end_date=new_sub.end_date,
             is_active=new_sub.is_active,
         )
-
-    # ─── Company Features ─────────────────────────────────────────────────────
-
-    async def update_company_features(
-        self,
-        db: AsyncSession,
-        company_id: uuid.UUID,
-        body: CompanyFeaturesUpdateRequest,
-    ) -> list[dict]:
-        result = await db.execute(
-            select(Company).where(
-                Company.id == company_id, Company.deleted_at.is_(None)
-            )
-        )
-        if result.scalar_one_or_none() is None:
-            raise ValueError("Company not found")
-
-        feature_ids = list(dict.fromkeys(body.feature_ids))
-
-        # Remove all existing company features before inserting replacements
-        await db.execute(
-            delete(CompanyFeature).where(CompanyFeature.company_id == company_id)
-        )
-        await db.flush()
-
-        # Add new features
-        for feature_id in feature_ids:
-            db.add(CompanyFeature(company_id=company_id, feature_id=feature_id, enabled=True))
-
-        await db.commit()
-
-        # Return current features
-        feat_result = await db.execute(
-            select(Feature).join(
-                CompanyFeature, CompanyFeature.feature_id == Feature.id
-            ).where(CompanyFeature.company_id == company_id)
-        )
-        return [
-            {"id": f.id, "code": f.code, "name": f.name}
-            for f in feat_result.scalars().all()
-        ]
 
     # ─── Plans ────────────────────────────────────────────────────────────────
 
@@ -458,7 +402,7 @@ class PlatformService:
         )
         plans = result.scalars().all()
         return {
-            "data": [PlanResponse.model_validate(p) for p in plans],
+            "data": [await self._plan_response(db, p) for p in plans],
             "total": len(plans),
         }
 
@@ -469,6 +413,9 @@ class PlatformService:
         if existing.scalar_one_or_none():
             raise ValueError("A plan with this name already exists")
 
+        feature_ids = list(dict.fromkeys(body.feature_ids))
+        await self._validate_feature_ids(db, feature_ids)
+
         plan = Plan(
             name=body.name,
             description=body.description,
@@ -477,9 +424,14 @@ class PlatformService:
             max_employees=body.max_employees,
         )
         db.add(plan)
+        await db.flush()
+
+        for fid in feature_ids:
+            db.add(PlanFeature(plan_id=plan.id, feature_id=fid))
+
         await db.commit()
         await db.refresh(plan)
-        return PlanResponse.model_validate(plan)
+        return await self._plan_response(db, plan)
 
     async def update_plan(
         self, db: AsyncSession, plan_id: uuid.UUID, body: PlanUpdateRequest
@@ -501,14 +453,54 @@ class PlatformService:
         if duplicate.scalar_one_or_none():
             raise ValueError("A plan with this name already exists")
 
+        feature_ids = list(dict.fromkeys(body.feature_ids))
+        await self._validate_feature_ids(db, feature_ids)
+
         plan.name = body.name
         plan.description = body.description
         plan.monthly_price = body.monthly_price
         plan.yearly_price = body.yearly_price
         plan.max_employees = body.max_employees
+
+        # Replace plan features
+        await db.execute(delete(PlanFeature).where(PlanFeature.plan_id == plan_id))
+        for fid in feature_ids:
+            db.add(PlanFeature(plan_id=plan.id, feature_id=fid))
+
         await db.commit()
         await db.refresh(plan)
-        return PlanResponse.model_validate(plan)
+        return await self._plan_response(db, plan)
+
+    async def _plan_response(self, db: AsyncSession, plan: Plan) -> PlanResponse:
+        features_result = await db.execute(
+            select(Feature)
+            .join(PlanFeature, PlanFeature.feature_id == Feature.id)
+            .where(PlanFeature.plan_id == plan.id)
+            .order_by(Feature.name.asc())
+        )
+        features = features_result.scalars().all()
+        return PlanResponse(
+            id=plan.id,
+            name=plan.name,
+            description=plan.description,
+            monthly_price=plan.monthly_price,
+            yearly_price=plan.yearly_price,
+            max_employees=plan.max_employees,
+            created_at=plan.created_at,
+            features=[PlanFeatureItem(id=f.id, code=f.code, name=f.name) for f in features],
+        )
+
+    async def _validate_feature_ids(
+        self, db: AsyncSession, feature_ids: list[uuid.UUID]
+    ) -> None:
+        if not feature_ids:
+            return
+        result = await db.execute(
+            select(func.count()).select_from(Feature).where(Feature.id.in_(feature_ids))
+        )
+        count = result.scalar_one()
+        if count != len(feature_ids):
+            raise ValueError("One or more feature IDs are invalid")
 
     async def check_plan_usage(
         self, db: AsyncSession, plan_id: uuid.UUID
@@ -591,30 +583,23 @@ class PlatformService:
         self, db: AsyncSession, feature_id: uuid.UUID
     ) -> FeatureDeleteCheckResponse:
         result = await db.execute(
-            select(CompanyFeature, Company)
-            .join(Company, Company.id == CompanyFeature.company_id)
+            select(Plan.name)
+            .join(PlanFeature, PlanFeature.plan_id == Plan.id)
             .where(
-                CompanyFeature.feature_id == feature_id,
-                Company.deleted_at.is_(None),
+                PlanFeature.feature_id == feature_id,
+                Plan.deleted_at.is_(None),
             )
         )
-        rows = result.all()
-        affected = [
-            FeatureUsageItem(
-                company_id=company.id,
-                company_name=company.company_name,
-                enabled=cf.enabled,
-            )
-            for cf, company in rows
-        ]
+        plan_names = [row[0] for row in result.all()]
         return FeatureDeleteCheckResponse(
-            can_delete=len(affected) == 0, affected_companies=affected
+            can_delete=len(plan_names) == 0,
+            affected_plans=plan_names,
         )
 
     async def delete_feature(self, db: AsyncSession, feature_id: uuid.UUID) -> None:
         usage = await self.check_feature_usage(db, feature_id)
         if not usage.can_delete:
-            raise ValueError("Feature is assigned to one or more companies")
+            raise ValueError("Feature is used in one or more plans")
 
         result = await db.execute(
             select(Feature).where(Feature.id == feature_id)

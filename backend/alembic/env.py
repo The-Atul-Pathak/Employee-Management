@@ -51,7 +51,7 @@ from app.models import (  # noqa: F401
     BillingCycle,
     Notification,
     AttendanceStatus,
-    CompanyFeature,
+    PlanFeature,
 )
 from app.core.config import settings
 

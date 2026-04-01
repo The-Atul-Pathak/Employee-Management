@@ -1,12 +1,12 @@
 from __future__ import annotations
 import uuid
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class CompanyLoginRequest(BaseModel):
     company_id: uuid.UUID
-    identifier: str  # emp_id or email
-    password: str
+    identifier: str = Field(min_length=1, max_length=255)  # emp_id or email
+    password: str = Field(min_length=1, max_length=255)
 
 
 class UserInfo(BaseModel):

@@ -1,7 +1,7 @@
 from __future__ import annotations
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import attendance, auth, leads, leaves, notifications, platform, projects, roles, tasks, teams, users
+from app.api.v1.endpoints import attendance, auth, leads, leaves, notifications, platform, projects, reports, roles, tasks, teams, users
 
 api_router = APIRouter()
 
@@ -17,3 +17,4 @@ api_router.include_router(tasks.router, tags=["tasks"])
 api_router.include_router(teams.router, prefix="/teams", tags=["teams"])
 api_router.include_router(users.router, prefix="/users", tags=["users"])
 api_router.include_router(notifications.router, prefix="/notifications", tags=["notifications"])
+api_router.include_router(reports.router, prefix="/reports", tags=["reports"])

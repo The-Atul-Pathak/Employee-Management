@@ -4,7 +4,8 @@ import uuid
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.access import CompanyFeature, Feature, FeaturePage, Role, RolesFeature, UserRole
+from app.models.access import Feature, FeaturePage, Role, RolesFeature, UserRole
+from app.models.plan import CompanySubscription, Plan, PlanFeature
 from app.schemas.auth import PageInfo
 from app.schemas.role import (
     FeatureBundleResponse,
@@ -123,10 +124,13 @@ class RoleService:
     ) -> list[FeatureBundleResponse]:
         stmt = (
             select(Feature)
-            .join(CompanyFeature, CompanyFeature.feature_id == Feature.id)
+            .join(PlanFeature, PlanFeature.feature_id == Feature.id)
+            .join(Plan, Plan.id == PlanFeature.plan_id)
+            .join(CompanySubscription, CompanySubscription.plan_id == Plan.id)
             .where(
-                CompanyFeature.company_id == company_id,
-                CompanyFeature.enabled.is_(True),
+                CompanySubscription.company_id == company_id,
+                CompanySubscription.is_active.is_(True),
+                Plan.deleted_at.is_(None),
             )
             .order_by(Feature.name.asc())
         )
@@ -151,10 +155,13 @@ class RoleService:
                     FeaturePage.route,
                 )
                 .join(Feature, Feature.id == FeaturePage.feature_id)
-                .join(CompanyFeature, CompanyFeature.feature_id == Feature.id)
+                .join(PlanFeature, PlanFeature.feature_id == Feature.id)
+                .join(Plan, Plan.id == PlanFeature.plan_id)
+                .join(CompanySubscription, CompanySubscription.plan_id == Plan.id)
                 .where(
-                    CompanyFeature.company_id == company_id,
-                    CompanyFeature.enabled.is_(True),
+                    CompanySubscription.company_id == company_id,
+                    CompanySubscription.is_active.is_(True),
+                    Plan.deleted_at.is_(None),
                 )
                 .distinct()
                 .order_by(FeaturePage.page_name.asc())
@@ -167,7 +174,9 @@ class RoleService:
                     FeaturePage.route,
                 )
                 .join(Feature, Feature.id == FeaturePage.feature_id)
-                .join(CompanyFeature, CompanyFeature.feature_id == Feature.id)
+                .join(PlanFeature, PlanFeature.feature_id == Feature.id)
+                .join(Plan, Plan.id == PlanFeature.plan_id)
+                .join(CompanySubscription, CompanySubscription.plan_id == Plan.id)
                 .join(RolesFeature, RolesFeature.feature_id == Feature.id)
                 .join(UserRole, UserRole.role_id == RolesFeature.role_id)
                 .join(Role, Role.id == UserRole.role_id)
@@ -175,8 +184,9 @@ class RoleService:
                     UserRole.user_id == user_id,
                     Role.company_id == company_id,
                     Role.deleted_at.is_(None),
-                    CompanyFeature.company_id == company_id,
-                    CompanyFeature.enabled.is_(True),
+                    CompanySubscription.company_id == company_id,
+                    CompanySubscription.is_active.is_(True),
+                    Plan.deleted_at.is_(None),
                 )
                 .distinct()
                 .order_by(FeaturePage.page_name.asc())
@@ -237,16 +247,19 @@ class RoleService:
         unique_feature_ids = list(dict.fromkeys(feature_ids))
         stmt = (
             select(Feature)
-            .join(CompanyFeature, CompanyFeature.feature_id == Feature.id)
+            .join(PlanFeature, PlanFeature.feature_id == Feature.id)
+            .join(Plan, Plan.id == PlanFeature.plan_id)
+            .join(CompanySubscription, CompanySubscription.plan_id == Plan.id)
             .where(
-                CompanyFeature.company_id == company_id,
-                CompanyFeature.enabled.is_(True),
+                CompanySubscription.company_id == company_id,
+                CompanySubscription.is_active.is_(True),
+                Plan.deleted_at.is_(None),
                 Feature.id.in_(unique_feature_ids),
             )
         )
         features = (await db.execute(stmt)).scalars().all()
         if len({feature.id for feature in features}) != len(unique_feature_ids):
-            raise ValueError("One or more feature IDs are invalid for this company")
+            raise ValueError("One or more feature IDs are not available for this company's plan")
         return features
 
     async def _set_role_features(

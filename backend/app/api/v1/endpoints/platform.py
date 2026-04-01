@@ -11,7 +11,6 @@ from app.core.config import settings
 from app.schemas.platform import (
     CompanyAdminCreateRequest,
     CompanyCreateRequest,
-    CompanyFeaturesUpdateRequest,
     CompanyListResponse,
     CompanyResponse,
     CompanyUpdateRequest,
@@ -205,19 +204,6 @@ async def upsert_subscription(
 ) -> SubscriptionResponse:
     try:
         return await platform_service.upsert_subscription(db, company_id, body)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
-
-
-@router.put("/companies/{company_id}/features")
-async def update_company_features(
-    company_id: uuid.UUID,
-    body: CompanyFeaturesUpdateRequest,
-    db: Annotated[AsyncSession, Depends(get_db)],
-    _: Annotated[dict, Depends(get_current_platform_admin)],
-) -> list:
-    try:
-        return await platform_service.update_company_features(db, company_id, body)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 

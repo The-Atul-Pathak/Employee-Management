@@ -1,9 +1,8 @@
 from __future__ import annotations
 from typing import Optional
 import uuid
-from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -81,43 +80,6 @@ class Feature(Base):
     pages: Mapped[list["FeaturePage"]] = relationship(
         "FeaturePage", back_populates="feature", lazy="select"
     )
-    company_features: Mapped[list["CompanyFeature"]] = relationship(
-        "CompanyFeature", back_populates="feature", lazy="select"
-    )
-
-
-class CompanyFeature(Base):
-    __tablename__ = "company_features"
-    __table_args__ = (
-        UniqueConstraint("company_id", "feature_id", name="uq_company_features_company_feature"),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-        index=True,
-    )
-    company_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("companies.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    feature_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("features.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    enabled_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        nullable=False,
-    )
-
-    feature: Mapped["Feature"] = relationship("Feature", back_populates="company_features")
 
 
 class FeaturePage(Base):

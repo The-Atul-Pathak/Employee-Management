@@ -14,7 +14,7 @@ from app.models.plan import BillingCycle
 
 class PlatformLoginRequest(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(min_length=1, max_length=255)
 
 
 class PlatformAdminInfo(BaseModel):
@@ -76,7 +76,6 @@ class SubscriptionResponse(BaseModel):
     plan_name: str
     billing_cycle: BillingCycle
     start_date: date
-    end_date: Optional[date]
     is_active: bool
 
 
@@ -127,31 +126,34 @@ class SubscriptionUpsertRequest(BaseModel):
     plan_id: uuid.UUID
     billing_cycle: BillingCycle
     start_date: date
-    end_date: Optional[date] = None
-
-
-# ─── Company Features ─────────────────────────────────────────────────────────
-
-class CompanyFeaturesUpdateRequest(BaseModel):
-    feature_ids: list[uuid.UUID]  # full replacement — these features will be enabled
 
 
 # ─── Plans ───────────────────────────────────────────────────────────────────
 
+class PlanFeatureItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    code: str
+    name: str
+
+
 class PlanCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=150)
-    description: Optional[str] = None
+    description: Optional[str] = Field(default=None, max_length=2000)
     monthly_price: Decimal = Field(ge=0)
     yearly_price: Decimal = Field(ge=0)
     max_employees: int = Field(ge=1)
+    feature_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
 class PlanUpdateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=150)
-    description: Optional[str] = None
+    description: Optional[str] = Field(default=None, max_length=2000)
     monthly_price: Decimal = Field(ge=0)
     yearly_price: Decimal = Field(ge=0)
     max_employees: int = Field(ge=1)
+    feature_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
 class PlanUsageItem(BaseModel):
@@ -169,6 +171,7 @@ class PlanResponse(BaseModel):
     yearly_price: Decimal
     max_employees: int
     created_at: datetime
+    features: list[PlanFeatureItem] = []
 
 
 class PlanListResponse(BaseModel):
@@ -186,18 +189,12 @@ class PlanDeleteCheckResponse(BaseModel):
 class FeatureCreateRequest(BaseModel):
     code: str = Field(min_length=1, max_length=100)
     name: str = Field(min_length=1, max_length=150)
-    description: Optional[str] = None
+    description: Optional[str] = Field(default=None, max_length=2000)
 
 
 class FeatureUpdateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=150)
-    description: Optional[str] = None
-
-
-class FeatureUsageItem(BaseModel):
-    company_id: uuid.UUID
-    company_name: str
-    enabled: bool
+    description: Optional[str] = Field(default=None, max_length=2000)
 
 
 class FeatureResponse(BaseModel):
@@ -216,4 +213,4 @@ class FeatureListResponse(BaseModel):
 
 class FeatureDeleteCheckResponse(BaseModel):
     can_delete: bool
-    affected_companies: list[FeatureUsageItem]
+    affected_plans: list[str]  # plan names that include this feature
