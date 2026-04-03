@@ -367,6 +367,163 @@ class AttendanceService:
                 f"Attendance cannot be marked more than {max_days} days in the past"
             )
 
+    async def get_team_member_ids(
+        self,
+        db: AsyncSession,
+        company_id: uuid.UUID,
+        manager_id: uuid.UUID,
+    ) -> list[uuid.UUID]:
+        from app.models.team import Team, TeamMember, TeamStatus
+
+        team_stmt = select(Team.id).where(
+            Team.company_id == company_id,
+            Team.manager_id == manager_id,
+            Team.status == TeamStatus.active,
+        )
+        team_id = (await db.execute(team_stmt)).scalar_one_or_none()
+        if team_id is None:
+            return []
+
+        member_stmt = select(TeamMember.user_id).where(TeamMember.team_id == team_id)
+        return [uid for (uid,) in (await db.execute(member_stmt)).all()]
+
+    async def get_daily_attendance_scoped(
+        self,
+        db: AsyncSession,
+        company_id: uuid.UUID,
+        target_date: date,
+        scope: str = "all",
+        manager_id: uuid.UUID | None = None,
+    ) -> AttendanceListResponse:
+        if scope == "team" and manager_id is not None:
+            member_ids = await self.get_team_member_ids(db, company_id, manager_id)
+            if not member_ids:
+                return AttendanceListResponse(data=[])
+            return await self._get_attendance_for_users(db, company_id, member_ids, target_date)
+        return await self.get_daily_attendance(db, company_id, target_date)
+
+    async def get_daily_summary_scoped(
+        self,
+        db: AsyncSession,
+        company_id: uuid.UUID,
+        target_date: date,
+        scope: str = "all",
+        manager_id: uuid.UUID | None = None,
+    ) -> AttendanceSummaryResponse:
+        if scope == "team" and manager_id is not None:
+            member_ids = await self.get_team_member_ids(db, company_id, manager_id)
+            if not member_ids:
+                return AttendanceSummaryResponse(
+                    present=0, absent=0, leave=0, half_day=0, total_employees=0
+                )
+            return await self._get_summary_for_users(db, company_id, member_ids, target_date)
+        return await self.get_daily_summary(db, company_id, target_date)
+
+    async def _get_attendance_for_users(
+        self,
+        db: AsyncSession,
+        company_id: uuid.UUID,
+        user_ids: list[uuid.UUID],
+        target_date: date,
+    ) -> AttendanceListResponse:
+        marker = aliased(User)
+        stmt = (
+            select(
+                User.id,
+                User.emp_id,
+                User.name,
+                Attendance.status,
+                marker.name,
+                Attendance.check_in_time,
+                Attendance.check_out_time,
+                Attendance.notes,
+            )
+            .outerjoin(
+                Attendance,
+                and_(
+                    Attendance.company_id == company_id,
+                    Attendance.user_id == User.id,
+                    Attendance.date == target_date,
+                ),
+            )
+            .outerjoin(marker, marker.id == Attendance.marked_by)
+            .where(
+                User.company_id == company_id,
+                User.id.in_(user_ids),
+                User.status == UserStatus.active,
+                User.deleted_at.is_(None),
+            )
+            .order_by(User.name.asc())
+        )
+        rows = (await db.execute(stmt)).all()
+        return AttendanceListResponse(
+            data=[
+                AttendanceListItem(
+                    user_id=user_id,
+                    emp_id=emp_id,
+                    name=name,
+                    status=attendance_status.value if attendance_status else "Unmarked",
+                    marked_by_name=marked_by_name,
+                    check_in=check_in,
+                    check_out=check_out,
+                    notes=notes,
+                )
+                for user_id, emp_id, name, attendance_status, marked_by_name, check_in, check_out, notes in rows
+            ]
+        )
+
+    async def _get_summary_for_users(
+        self,
+        db: AsyncSession,
+        company_id: uuid.UUID,
+        user_ids: list[uuid.UUID],
+        target_date: date,
+    ) -> AttendanceSummaryResponse:
+        stmt = (
+            select(
+                func.count(User.id),
+                func.coalesce(
+                    func.sum(case((Attendance.status == AttendanceStatus.present, 1), else_=0)),
+                    0,
+                ),
+                func.coalesce(
+                    func.sum(case((Attendance.status == AttendanceStatus.absent, 1), else_=0)),
+                    0,
+                ),
+                func.coalesce(
+                    func.sum(case((Attendance.status == AttendanceStatus.leave, 1), else_=0)),
+                    0,
+                ),
+                func.coalesce(
+                    func.sum(case((Attendance.status == AttendanceStatus.half_day, 1), else_=0)),
+                    0,
+                ),
+            )
+            .select_from(User)
+            .outerjoin(
+                Attendance,
+                and_(
+                    Attendance.company_id == company_id,
+                    Attendance.user_id == User.id,
+                    Attendance.date == target_date,
+                ),
+            )
+            .where(
+                User.company_id == company_id,
+                User.id.in_(user_ids),
+                User.status == UserStatus.active,
+                User.deleted_at.is_(None),
+            )
+        )
+        total_employees, present, absent, leave, half_day = (await db.execute(stmt)).one()
+        return AttendanceSummaryResponse(
+            present=present,
+            absent=absent,
+            leave=leave,
+            half_day=half_day,
+            total_employees=total_employees,
+        )
+
     def _parse_month(self, month: str) -> tuple[date, date]:
         try:
             year, month_value = month.split("-", maxsplit=1)

@@ -1,277 +1,621 @@
 #!/usr/bin/env python3
-"""Seed database with demo data."""
+"""Seed database with platform data and demo content.
+
+Idempotent: safe to run multiple times.  Existing records (matched by
+unique key) are skipped, not duplicated.
+"""
+
+from __future__ import annotations
 
 import asyncio
-import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
 from app.core.config import settings
 from app.core.security import hash_password
-from app.models import (
-    Company,
-    CompanyStatus,
-    Feature,
-    Plan,
-    CompanySubscription,
-    User,
-    UserProfile,
-    UserStatus,
-    UserRole,
-    Role,
-    RolesFeature,
-    Team,
-    Attendance,
-    AttendanceStatus,
-    LeaveType,
-    LeaveBalance,
-    Project,
-    ProjectTask,
-    TaskStatus,
-    Lead,
-)
+from app.models.access import Feature, FeaturePage, Role, RolesFeature, UserRole
+from app.models.attendance import Attendance, AttendanceStatus
+from app.models.company import Company, CompanyContact, CompanyStatus
+from app.models.leave import LeaveBalance, LeaveType
+from app.models.plan import BillingCycle, CompanySubscription, Plan, PlanFeature
+from app.models.platform_admin import PlatformAdmin, PlatformAdminRole, PlatformAdminStatus
+from app.models.team import Team, TeamMember
+from app.models.user import User, UserProfile, UserStatus
+
+# ─── Feature registry ─────────────────────────────────────────────────────────
+#
+# Each entry: (code, name, description, pages)
+# pages: list of (page_code, page_name, route)
+#
+FEATURES: list[tuple[str, str, str, list[tuple[str, str, str]]]] = [
+    (
+        "USER_MGMT",
+        "User Management",
+        "Manage employees, roles, and access",
+        [
+            ("users_admin", "Users - Admin", "/users"),
+            ("my_profile", "My Profile", "/my-profile"),
+        ],
+    ),
+    (
+        "ATTENDANCE",
+        "Attendance",
+        "Track daily attendance and check-in/out",
+        [
+            ("attendance_admin", "Attendance - Admin", "/attendance"),
+            ("my_attendance", "My Attendance", "/my-attendance"),
+        ],
+    ),
+    (
+        "LEAVE",
+        "Leave Management",
+        "Apply for and approve leave requests",
+        [
+            ("leaves_admin", "Leaves - Admin", "/leaves"),
+            ("my_leaves", "My Leaves", "/my-leaves"),
+        ],
+    ),
+    (
+        "TEAM",
+        "Team Management",
+        "Create and manage teams",
+        [
+            ("teams", "Teams", "/teams"),
+        ],
+    ),
+    (
+        "CRM",
+        "Sales CRM",
+        "Lead pipeline and customer tracking",
+        [
+            ("leads", "Leads", "/leads"),
+        ],
+    ),
+    (
+        "PROJECT",
+        "Project Management",
+        "Plan and track project delivery",
+        [
+            ("projects", "Projects", "/projects"),
+        ],
+    ),
+    (
+        "TASK",
+        "Task Management",
+        "Assign and track tasks",
+        [
+            ("tasks", "Tasks", "/tasks"),
+        ],
+    ),
+    (
+        "REPORTS",
+        "Reports",
+        "Attendance, leave, and operational reports",
+        [
+            ("reports", "Reports", "/reports"),
+        ],
+    ),
+    (
+        "ANNOUNCEMENTS",
+        "Announcements & Noticeboard",
+        "Post and view company announcements",
+        [
+            ("announcements", "Announcements", "/announcements"),
+        ],
+    ),
+    (
+        "DOCUMENTS",
+        "Document Management",
+        "Upload and manage HR documents",
+        [
+            ("documents_admin", "Documents - Admin", "/documents"),
+            ("my_documents", "My Documents", "/my-documents"),
+        ],
+    ),
+    (
+        "PAYROLL",
+        "Payroll Management",
+        "Run payroll and manage salary structures",
+        [
+            ("payroll_admin", "Payroll - Admin", "/payroll"),
+            ("my_payslips", "My Payslips", "/my-payslips"),
+        ],
+    ),
+    (
+        "EXPENSE",
+        "Expense Management",
+        "Submit and approve expense claims",
+        [
+            ("expenses", "Expenses", "/expenses"),
+        ],
+    ),
+    (
+        "ASSETS",
+        "Asset Management",
+        "Track and assign IT assets",
+        [
+            ("assets_admin", "Assets - Admin", "/assets"),
+            ("my_assets", "My Assets", "/my-assets"),
+        ],
+    ),
+    (
+        "ONBOARDING",
+        "Onboarding Workflow",
+        "Structured new-hire onboarding checklists",
+        [
+            ("onboarding_admin", "Onboarding - Admin", "/onboarding"),
+            ("my_onboarding", "My Onboarding", "/my-onboarding"),
+            ("onboarding_settings", "Onboarding Templates", "/settings/onboarding"),
+        ],
+    ),
+    (
+        "OFFBOARDING",
+        "Offboarding Workflow",
+        "Exit checklist and full-and-final settlement",
+        [
+            ("offboarding_admin", "Offboarding - Admin", "/offboarding"),
+        ],
+    ),
+    (
+        "PERFORMANCE",
+        "Performance Reviews",
+        "Periodic appraisal cycles with manager reviews",
+        [
+            ("performance_admin", "Performance - Admin", "/performance"),
+            ("my_reviews", "My Reviews", "/my-reviews"),
+        ],
+    ),
+    (
+        "SHIFTS",
+        "Shift Management",
+        "Define work shifts and assign employees",
+        [
+            ("shifts_settings", "Shift Management", "/settings/shifts"),
+        ],
+    ),
+    (
+        "HOLIDAYS",
+        "Holiday Calendar",
+        "Define public and company holidays",
+        [
+            ("holidays_settings", "Holiday Calendar", "/settings/holidays"),
+        ],
+    ),
+]
+
+# ─── Plan definitions ──────────────────────────────────────────────────────────
+#
+# (name, description, monthly_price, yearly_price, max_employees, feature_codes)
+#
+PLANS: list[tuple[str, str, Decimal, Decimal, int, list[str]]] = [
+    (
+        "Starter",
+        "For small teams — core HR essentials",
+        Decimal("99.00"),
+        Decimal("990.00"),
+        25,
+        ["USER_MGMT", "ATTENDANCE", "LEAVE", "ANNOUNCEMENTS", "DOCUMENTS", "HOLIDAYS"],
+    ),
+    (
+        "Growth",
+        "For growing companies — full HR + operations",
+        Decimal("299.00"),
+        Decimal("2990.00"),
+        100,
+        [
+            "USER_MGMT",
+            "ATTENDANCE",
+            "LEAVE",
+            "ANNOUNCEMENTS",
+            "DOCUMENTS",
+            "HOLIDAYS",
+            "TEAM",
+            "CRM",
+            "PROJECT",
+            "TASK",
+            "EXPENSE",
+            "ASSETS",
+            "ONBOARDING",
+            "SHIFTS",
+            "PAYROLL",
+            "REPORTS",
+        ],
+    ),
+    (
+        "Business",
+        "For established businesses — all features",
+        Decimal("599.00"),
+        Decimal("5990.00"),
+        500,
+        [
+            "USER_MGMT",
+            "ATTENDANCE",
+            "LEAVE",
+            "ANNOUNCEMENTS",
+            "DOCUMENTS",
+            "HOLIDAYS",
+            "TEAM",
+            "CRM",
+            "PROJECT",
+            "TASK",
+            "EXPENSE",
+            "ASSETS",
+            "ONBOARDING",
+            "SHIFTS",
+            "PAYROLL",
+            "REPORTS",
+            "PERFORMANCE",
+            "OFFBOARDING",
+        ],
+    ),
+]
 
 
-async def seed_database():
-    """Seed the database with demo data."""
+async def seed_database() -> None:
     engine = create_async_engine(settings.DATABASE_URL, echo=False)
     async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     async with async_session() as db:
         print("🌱 Seeding database...")
 
-        # 1. Create Plans
-        plans = [
-            Plan(
-                name="Starter",
-                description="For small teams",
-                monthly_price=Decimal("99.00"),
-                yearly_price=Decimal("990.00"),
-                max_employees=10,
-            ),
-            Plan(
-                name="Professional",
-                description="For growing companies",
-                monthly_price=Decimal("299.00"),
-                yearly_price=Decimal("2990.00"),
-                max_employees=50,
-            ),
-        ]
-        db.add_all(plans)
-        await db.flush()
-        print(f"✅ Created {len(plans)} plans")
-
-        # 2. Create Features
-        features = [
-            Feature(code="view_dashboard", name="View Dashboard"),
-            Feature(code="manage_users", name="Manage Users"),
-            Feature(code="mark_attendance", name="Mark Attendance"),
-            Feature(code="apply_leave", name="Apply Leave"),
-            Feature(code="manage_projects", name="Manage Projects"),
-            Feature(code="manage_tasks", name="Manage Tasks"),
-        ]
-        db.add_all(features)
-        await db.flush()
-        print(f"✅ Created {len(features)} features")
-
-        # 3. Create Companies
-        company1 = Company(
-            id=uuid.uuid4(),
-            company_name="Acme Corporation",
-            status=CompanyStatus.active,
-        )
-        db.add(company1)
-        await db.flush()
-        print(f"✅ Created company")
-
-        # 4. Create Subscription
-        subscription = CompanySubscription(
-            company_id=company1.id,
-            plan_id=plans[0].id,
-            status="active",
-            started_at=datetime.now(timezone.utc),
-            expires_at=datetime.now(timezone.utc) + timedelta(days=365),
-        )
-        db.add(subscription)
-        await db.flush()
-        print(f"✅ Created subscription")
-
-        # 5. Create Roles
-        admin_role = Role(
-            company_id=company1.id,
-            name="Admin",
-            description="Company administrator",
-        )
-        employee_role = Role(
-            company_id=company1.id,
-            name="Employee",
-            description="Regular employee",
-        )
-        db.add_all([admin_role, employee_role])
-        await db.flush()
-        print(f"✅ Created roles")
-
-        # 6. Assign features to admin role
-        for feature in features:
-            db.add(RolesFeature(role_id=admin_role.id, feature_id=feature.id))
-        await db.flush()
-        print(f"✅ Assigned features to roles")
-
-        # 7. Create Users
-        admin_user = User(
-            company_id=company1.id,
-            email="admin@acme.com",
-            emp_id="AC001",
-            status=UserStatus.ACTIVE,
-            password_hash=hash_password("Admin@123"),
-            is_company_admin=True,
-            name="Alice Johnson",
-        )
-        emp_users = [
-            User(
-                company_id=company1.id,
-                email=f"emp{i}@acme.com",
-                emp_id=f"AC{100+i}",
-                status=UserStatus.ACTIVE,
-                password_hash=hash_password(f"Emp{i}@123"),
-                is_company_admin=False,
-                name=f"Employee {i}",
+        # ── 1. Platform Admin ──────────────────────────────────────────────────
+        existing_admin = (
+            await db.execute(
+                select(PlatformAdmin).where(PlatformAdmin.email == "admin@raize.io")
             )
-            for i in range(1, 6)
-        ]
-        db.add_all([admin_user] + emp_users)
-        await db.flush()
-        print(f"✅ Created 6 users")
+        ).scalar_one_or_none()
 
-        # 8. Create User Profiles
-        for user in [admin_user] + emp_users:
-            profile = UserProfile(
-                user_id=user.id,
-                date_of_birth=datetime(1990, 1, 1).date(),
-                phone="+1234567890",
-                department="Engineering",
-                position="Developer",
-                joined_date=datetime.now(timezone.utc).date(),
+        if existing_admin is None:
+            db.add(
+                PlatformAdmin(
+                    name="Super Admin",
+                    email="admin@raize.io",
+                    password_hash=hash_password("SuperAdmin@123"),
+                    role=PlatformAdminRole.SUPER_ADMIN,
+                    status=PlatformAdminStatus.active,
+                )
             )
-            db.add(profile)
-        await db.flush()
-        print(f"✅ Created user profiles")
+            await db.flush()
+            print("✅ Created platform admin")
+        else:
+            print("⏭  Platform admin already exists")
 
-        # 9. Assign users to roles
-        db.add(UserRole(user_id=admin_user.id, role_id=admin_role.id))
-        for user in emp_users:
-            db.add(UserRole(user_id=user.id, role_id=employee_role.id))
-        await db.flush()
-        print(f"✅ Assigned users to roles")
+        # ── 2. Features ────────────────────────────────────────────────────────
+        feature_map: dict[str, Feature] = {}
+        for code, name, description, pages in FEATURES:
+            feat = (
+                await db.execute(select(Feature).where(Feature.code == code))
+            ).scalar_one_or_none()
 
-        # 10. Create Teams
-        team1 = Team(
-            company_id=company1.id,
-            name="Engineering",
-            description="Engineering team",
-            leader_id=admin_user.id,
-        )
-        db.add(team1)
-        await db.flush()
-        print(f"✅ Created team")
+            if feat is None:
+                feat = Feature(code=code, name=name, description=description)
+                db.add(feat)
+                await db.flush()
+                print(f"  ✅ Feature: {code}")
+            else:
+                print(f"  ⏭  Feature already exists: {code}")
 
-        # 11. Create Leave Types
-        leave_types = [
-            LeaveType(company_id=company1.id, name="Casual Leave", quota=12),
-            LeaveType(company_id=company1.id, name="Sick Leave", quota=6),
-        ]
-        db.add_all(leave_types)
-        await db.flush()
-        print(f"✅ Created leave types")
+            feature_map[code] = feat
 
-        # 12. Create Leave Balances
+            for page_code, page_name, route in pages:
+                existing_page = (
+                    await db.execute(
+                        select(FeaturePage).where(
+                            FeaturePage.feature_id == feat.id,
+                            FeaturePage.page_code == page_code,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if existing_page is None:
+                    db.add(
+                        FeaturePage(
+                            feature_id=feat.id,
+                            page_code=page_code,
+                            page_name=page_name,
+                            route=route,
+                        )
+                    )
+
+        await db.flush()
+        print(f"✅ Features and feature pages seeded ({len(FEATURES)} features)")
+
+        # ── 3. Plans ───────────────────────────────────────────────────────────
+        for plan_name, description, monthly, yearly, max_emp, feature_codes in PLANS:
+            plan = (
+                await db.execute(
+                    select(Plan).where(Plan.name == plan_name, Plan.deleted_at.is_(None))
+                )
+            ).scalar_one_or_none()
+
+            if plan is None:
+                plan = Plan(
+                    name=plan_name,
+                    description=description,
+                    monthly_price=monthly,
+                    yearly_price=yearly,
+                    max_employees=max_emp,
+                )
+                db.add(plan)
+                await db.flush()
+                print(f"  ✅ Plan: {plan_name}")
+            else:
+                print(f"  ⏭  Plan already exists: {plan_name}")
+
+            # Assign features to plan (idempotent)
+            existing_plan_features = set(
+                row[0]
+                for row in (
+                    await db.execute(
+                        select(PlanFeature.feature_id).where(PlanFeature.plan_id == plan.id)
+                    )
+                ).all()
+            )
+            for code in feature_codes:
+                feat = feature_map.get(code)
+                if feat and feat.id not in existing_plan_features:
+                    db.add(PlanFeature(plan_id=plan.id, feature_id=feat.id))
+                    existing_plan_features.add(feat.id)
+
+        await db.flush()
+        print(f"✅ Plans seeded ({len(PLANS)} plans)")
+
+        # ── 4. Demo company ────────────────────────────────────────────────────
+        demo_company = (
+            await db.execute(
+                select(Company).where(
+                    Company.company_name == "Acme Corporation",
+                    Company.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+
+        if demo_company is None:
+            demo_company = Company(
+                company_name="Acme Corporation",
+                legal_name="Acme Corporation Pvt. Ltd.",
+                industry="Technology",
+                domain="acme.com",
+                employee_size_range="11-50",
+                status=CompanyStatus.active,
+            )
+            db.add(demo_company)
+            await db.flush()
+
+            db.add(
+                CompanyContact(
+                    company_id=demo_company.id,
+                    name="Alice Johnson",
+                    email="alice@acme.com",
+                    phone="+919876543210",
+                    is_primary=True,
+                )
+            )
+            await db.flush()
+            print("✅ Created demo company: Acme Corporation")
+        else:
+            print("⏭  Demo company already exists")
+
+        # ── 5. Demo subscription (Growth plan) ─────────────────────────────────
+        growth_plan = (
+            await db.execute(
+                select(Plan).where(Plan.name == "Growth", Plan.deleted_at.is_(None))
+            )
+        ).scalar_one_or_none()
+
+        if growth_plan:
+            existing_sub = (
+                await db.execute(
+                    select(CompanySubscription).where(
+                        CompanySubscription.company_id == demo_company.id,
+                        CompanySubscription.is_active.is_(True),
+                    )
+                )
+            ).scalar_one_or_none()
+
+            if existing_sub is None:
+                db.add(
+                    CompanySubscription(
+                        company_id=demo_company.id,
+                        plan_id=growth_plan.id,
+                        billing_cycle=BillingCycle.monthly,
+                        start_date=date.today(),
+                        is_active=True,
+                    )
+                )
+                await db.flush()
+                print("✅ Created demo subscription (Growth plan)")
+            else:
+                print("⏭  Demo subscription already exists")
+
+        # ── 6. Demo admin user ─────────────────────────────────────────────────
+        admin_user = (
+            await db.execute(
+                select(User).where(
+                    User.company_id == demo_company.id,
+                    User.email == "admin@acme.com",
+                    User.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+
+        if admin_user is None:
+            admin_user = User(
+                company_id=demo_company.id,
+                emp_id="AC001",
+                name="Alice Johnson",
+                email="admin@acme.com",
+                password_hash=hash_password("Admin@123"),
+                is_company_admin=True,
+                status=UserStatus.active,
+            )
+            db.add(admin_user)
+            await db.flush()
+
+            db.add(
+                UserProfile(
+                    user_id=admin_user.id,
+                    company_id=demo_company.id,
+                    date_of_joining=date.today(),
+                )
+            )
+            await db.flush()
+            print("✅ Created demo admin user: admin@acme.com / Admin@123")
+        else:
+            print("⏭  Demo admin user already exists")
+
+        # ── 7. Demo employees ──────────────────────────────────────────────────
+        emp_users: list[User] = []
+        for i in range(1, 6):
+            emp = (
+                await db.execute(
+                    select(User).where(
+                        User.company_id == demo_company.id,
+                        User.email == f"emp{i}@acme.com",
+                        User.deleted_at.is_(None),
+                    )
+                )
+            ).scalar_one_or_none()
+
+            if emp is None:
+                emp = User(
+                    company_id=demo_company.id,
+                    emp_id=f"AC{100 + i}",
+                    name=f"Employee {i}",
+                    email=f"emp{i}@acme.com",
+                    password_hash=hash_password(f"Emp{i}@123"),
+                    is_company_admin=False,
+                    status=UserStatus.active,
+                )
+                db.add(emp)
+                await db.flush()
+
+                db.add(
+                    UserProfile(
+                        user_id=emp.id,
+                        company_id=demo_company.id,
+                        date_of_joining=date.today(),
+                    )
+                )
+                await db.flush()
+
+            emp_users.append(emp)
+
+        print(f"✅ Demo employees ready ({len(emp_users)})")
+
+        # ── 8. Demo team ───────────────────────────────────────────────────────
+        demo_team = (
+            await db.execute(
+                select(Team).where(
+                    Team.company_id == demo_company.id,
+                    Team.name == "Engineering",
+                    Team.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+
+        if demo_team is None:
+            demo_team = Team(
+                company_id=demo_company.id,
+                name="Engineering",
+                description="Engineering team",
+                manager_id=admin_user.id,
+            )
+            db.add(demo_team)
+            await db.flush()
+
+            for emp in emp_users:
+                db.add(TeamMember(team_id=demo_team.id, user_id=emp.id))
+            await db.flush()
+            print("✅ Created demo team: Engineering")
+        else:
+            print("⏭  Demo team already exists")
+
+        # ── 9. Demo leave balances ─────────────────────────────────────────────
+        current_year = date.today().year
+        leave_quotas = {
+            LeaveType.casual: 12.0,
+            LeaveType.sick: 6.0,
+            LeaveType.earned: 15.0,
+        }
         for user in [admin_user] + emp_users:
-            for leave_type in leave_types:
-                db.add(LeaveBalance(
-                    user_id=user.id,
-                    leave_type_id=leave_type.id,
-                    balance=leave_type.quota,
-                ))
-        await db.flush()
-        print(f"✅ Created leave balances")
+            for leave_type, quota in leave_quotas.items():
+                existing_bal = (
+                    await db.execute(
+                        select(LeaveBalance).where(
+                            LeaveBalance.company_id == demo_company.id,
+                            LeaveBalance.user_id == user.id,
+                            LeaveBalance.leave_type == leave_type,
+                            LeaveBalance.year == current_year,
+                        )
+                    )
+                ).scalar_one_or_none()
 
-        # 13. Create Attendance Records
+                if existing_bal is None:
+                    db.add(
+                        LeaveBalance(
+                            company_id=demo_company.id,
+                            user_id=user.id,
+                            leave_type=leave_type,
+                            year=current_year,
+                            total_quota=quota,
+                            used=0,
+                            remaining=quota,
+                        )
+                    )
+        await db.flush()
+        print("✅ Demo leave balances seeded")
+
+        # ── 10. Demo attendance records ────────────────────────────────────────
+        today = date.today()
         for user in [admin_user] + emp_users:
             for days_ago in range(0, 20):
-                date = (datetime.now(timezone.utc) - timedelta(days=days_ago)).date()
-                if date.weekday() < 5:  # Weekdays only
-                    db.add(Attendance(
-                        company_id=company1.id,
-                        user_id=user.id,
-                        date=date,
-                        check_in_time=datetime.combine(date, datetime.min.time()).replace(hour=9, minute=0),
-                        check_out_time=datetime.combine(date, datetime.min.time()).replace(hour=17, minute=30),
-                        status=AttendanceStatus.PRESENT,
-                    ))
+                att_date = today - timedelta(days=days_ago)
+                if att_date.weekday() >= 5:  # Skip weekends
+                    continue
+                existing_att = (
+                    await db.execute(
+                        select(Attendance).where(
+                            Attendance.company_id == demo_company.id,
+                            Attendance.user_id == user.id,
+                            Attendance.date == att_date,
+                        )
+                    )
+                ).scalar_one_or_none()
+
+                if existing_att is None:
+                    check_in = datetime.combine(att_date, datetime.min.time()).replace(
+                        hour=9, minute=0, tzinfo=timezone.utc
+                    )
+                    check_out = datetime.combine(att_date, datetime.min.time()).replace(
+                        hour=17, minute=30, tzinfo=timezone.utc
+                    )
+                    db.add(
+                        Attendance(
+                            company_id=demo_company.id,
+                            user_id=user.id,
+                            date=att_date,
+                            status=AttendanceStatus.present,
+                            check_in_time=check_in,
+                            check_out_time=check_out,
+                        )
+                    )
         await db.flush()
-        print(f"✅ Created attendance records")
+        print("✅ Demo attendance records seeded")
 
-        # 14. Create Projects
-        project1 = Project(
-            company_id=company1.id,
-            name="Website Redesign",
-            description="Redesign company website",
-            team_id=team1.id,
-            planned_start_date=datetime.now(timezone.utc).date(),
-            planned_end_date=(datetime.now(timezone.utc) + timedelta(days=90)).date(),
-        )
-        db.add(project1)
-        await db.flush()
-        print(f"✅ Created project")
-
-        # 15. Create Tasks
-        tasks = [
-            ProjectTask(
-                project_id=project1.id,
-                title="Design Mockups",
-                description="Create UI mockups",
-                assigned_to=emp_users[0].id,
-                status=TaskStatus.IN_PROGRESS,
-                due_date=(datetime.now(timezone.utc) + timedelta(days=7)).date(),
-            ),
-            ProjectTask(
-                project_id=project1.id,
-                title="Frontend Development",
-                description="Build frontend",
-                assigned_to=emp_users[1].id,
-                status=TaskStatus.PENDING,
-                due_date=(datetime.now(timezone.utc) + timedelta(days=30)).date(),
-            ),
-        ]
-        db.add_all(tasks)
-        await db.flush()
-        print(f"✅ Created tasks")
-
-        # 16. Create Leads
-        leads = [
-            Lead(
-                company_id=company1.id,
-                name="Acme Client A",
-                email="contact@acmeclient.com",
-                phone="+1111111111",
-                assigned_to=emp_users[1].id,
-            ),
-            Lead(
-                company_id=company1.id,
-                name="TechCorp Client B",
-                email="sales@techcorpclient.com",
-                phone="+2222222222",
-                assigned_to=emp_users[2].id,
-            ),
-        ]
-        db.add_all(leads)
-
-        # Commit all changes
         await db.commit()
         print("\n✨ Database seeded successfully!")
-        print("\n📝 Demo Credentials:")
+        print("\n📝 Platform Admin:")
+        print("  Email: admin@raize.io")
+        print("  Password: SuperAdmin@123")
+        print("\n📝 Demo Company (Acme Corporation):")
         print("  Admin: admin@acme.com / Admin@123")
         print("  Employees: emp{1-5}@acme.com / Emp{N}@123")
 

@@ -6,11 +6,13 @@ services:
     container_name: ems_db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ems_user
-      POSTGRES_PASSWORD: ems_password_change_me
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
       POSTGRES_DB: ems_db
     ports:
-      - "5433:5432"
+      - "5434:5432"
+    networks:
+      - docker_network
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -25,6 +27,8 @@ services:
     restart: unless-stopped
     ports:
       - "6379:6379"
+    networks:
+      - docker_network
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
@@ -39,6 +43,9 @@ services:
     restart: unless-stopped
     env_file:
       - ../backend/.env
+    environment:
+      DB_HOST: db
+      REDIS_HOST: redis
     ports:
       - "8000:8000"
     depends_on:
@@ -46,6 +53,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - docker_network
     volumes:
       - ../backend:/app
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
@@ -67,6 +76,10 @@ services:
       - /app/.next
       - /app/node_modules
     command: npm run dev
+
+networks:
+  docker_network:
+    driver: bridge
 
 volumes:
   pgdata:

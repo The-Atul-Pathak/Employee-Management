@@ -21,6 +21,8 @@ from app.models.company import Company, CompanyContact, CompanyStatus
 from app.models.plan import BillingCycle, CompanySubscription, Plan, PlanFeature
 from app.models.platform_admin import PlatformAdmin, PlatformAdminStatus, PlatformSession
 from app.models.user import User, UserStatus
+from app.services.holiday_service import seed_company_holidays
+from app.services.role_seeder import seed_default_roles
 from app.schemas.platform import (
     CompanyAdminCreateRequest,
     CompanyCreateRequest,
@@ -204,6 +206,11 @@ class PlatformService:
             is_primary=True,
         )
         db.add(contact)
+        await db.flush()
+
+        await seed_default_roles(company.id, db)
+        await seed_company_holidays(company.id, db)
+
         await db.commit()
         company = await self._get_company_with_contacts(db, company.id)
         return await self._company_response(db, company)
@@ -382,6 +389,10 @@ class PlatformService:
             is_active=True,
         )
         db.add(new_sub)
+        await db.flush()
+
+        await seed_default_roles(company_id, db)
+
         await db.commit()
         await db.refresh(new_sub)
 

@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     APP_DEBUG: bool = False
     ATTENDANCE_MARK_PAST_DAYS_LIMIT: int = 7
+    UPLOAD_DIR: str = "uploads"
 
     @property
     def DATABASE_URL(self) -> str:

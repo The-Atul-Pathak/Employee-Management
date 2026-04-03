@@ -392,6 +392,119 @@ class LeaveService:
         if not role_names.intersection(HR_ROLE_NAMES):
             raise PermissionError("Admin or HR access required")
 
+    async def ensure_team_lead_or_manager_access(
+        self,
+        db: AsyncSession,
+        company_id: uuid.UUID,
+        user_id: uuid.UUID,
+    ) -> None:
+        """Allow admin, HR, or any user who manages at least one active team."""
+        try:
+            await self.ensure_leave_manager_access(db, company_id, user_id)
+            return
+        except PermissionError:
+            pass
+
+        from app.models.team import Team, TeamStatus
+
+        team_stmt = select(Team.id).where(
+            Team.company_id == company_id,
+            Team.manager_id == user_id,
+            Team.status == TeamStatus.active,
+        ).limit(1)
+        team_id = (await db.execute(team_stmt)).scalar_one_or_none()
+        if team_id is None:
+            raise PermissionError("Admin, HR, or team lead access required")
+
+    async def get_team_member_ids(
+        self,
+        db: AsyncSession,
+        company_id: uuid.UUID,
+        manager_id: uuid.UUID,
+    ) -> list[uuid.UUID]:
+        from app.models.team import Team, TeamMember, TeamStatus
+
+        team_stmt = select(Team.id).where(
+            Team.company_id == company_id,
+            Team.manager_id == manager_id,
+            Team.status == TeamStatus.active,
+        )
+        team_id = (await db.execute(team_stmt)).scalar_one_or_none()
+        if team_id is None:
+            return []
+
+        member_stmt = select(TeamMember.user_id).where(TeamMember.team_id == team_id)
+        return [uid for (uid,) in (await db.execute(member_stmt)).all()]
+
+    async def get_team_leaves(
+        self,
+        db: AsyncSession,
+        company_id: uuid.UUID,
+        manager_id: uuid.UUID,
+        status_filter: LeaveStatus | None,
+        page: int,
+        per_page: int,
+    ) -> LeaveListResponse:
+        member_ids = await self.get_team_member_ids(db, company_id, manager_id)
+        if not member_ids:
+            return LeaveListResponse(
+                data=[],
+                meta=PaginationMeta(total=0, page=page, per_page=per_page, total_pages=0),
+            )
+
+        user_alias = aliased(User)
+        filters = [
+            LeaveRequest.company_id == company_id,
+            LeaveRequest.user_id.in_(member_ids),
+        ]
+        if status_filter is not None:
+            filters.append(LeaveRequest.status == status_filter)
+
+        total_stmt = select(func.count()).select_from(LeaveRequest).where(*filters)
+        total = (await db.execute(total_stmt)).scalar_one()
+
+        stmt = (
+            select(LeaveRequest, user_alias)
+            .join(user_alias, user_alias.id == LeaveRequest.user_id)
+            .where(*filters)
+            .order_by(LeaveRequest.applied_at.desc(), LeaveRequest.created_at.desc())
+            .offset((page - 1) * per_page)
+            .limit(per_page)
+        )
+        rows = (await db.execute(stmt)).all()
+
+        return LeaveListResponse(
+            data=[
+                LeaveListItem(
+                    id=leave.id,
+                    user=self._build_user_info(user),
+                    leave_type=leave.leave_type,
+                    start_date=leave.start_date,
+                    end_date=leave.end_date,
+                    total_days=float(leave.total_days),
+                    status=leave.status,
+                    applied_at=leave.applied_at,
+                )
+                for leave, user in rows
+            ],
+            meta=PaginationMeta(
+                total=total,
+                page=page,
+                per_page=per_page,
+                total_pages=math.ceil(total / per_page) if total else 0,
+            ),
+        )
+
+    async def is_team_member(
+        self,
+        db: AsyncSession,
+        company_id: uuid.UUID,
+        manager_id: uuid.UUID,
+        target_user_id: uuid.UUID,
+    ) -> bool:
+        member_ids = await self.get_team_member_ids(db, company_id, manager_id)
+        return target_user_id in member_ids
+
     async def ensure_leave_access(
         self,
         db: AsyncSession,

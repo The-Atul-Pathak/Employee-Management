@@ -110,8 +110,23 @@ async def get_all_leaves(
     status_filter: LeaveStatus | None = Query(default=None, alias="status"),
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=20, ge=1, le=100),
+    scope: str = Query(default="all"),
 ) -> LeaveListResponse:
     try:
+        if scope == "team":
+            await leave_service.ensure_team_lead_or_manager_access(
+                db=db,
+                company_id=current_user["company_id"],
+                user_id=current_user["user_id"],
+            )
+            return await leave_service.get_team_leaves(
+                db=db,
+                company_id=current_user["company_id"],
+                manager_id=current_user["user_id"],
+                status_filter=status_filter,
+                page=page,
+                per_page=per_page,
+            )
         await leave_service.ensure_leave_manager_access(
             db=db,
             company_id=current_user["company_id"],
@@ -163,11 +178,29 @@ async def review_leave(
     current_user: Annotated[dict, Depends(get_current_user)],
 ) -> LeaveDetailResponse:
     try:
-        await leave_service.ensure_leave_manager_access(
-            db=db,
-            company_id=current_user["company_id"],
-            user_id=current_user["user_id"],
-        )
+        # Check admin/HR first; if not, check if team lead can review this leave
+        try:
+            await leave_service.ensure_leave_manager_access(
+                db=db,
+                company_id=current_user["company_id"],
+                user_id=current_user["user_id"],
+            )
+        except PermissionError:
+            # Allow team lead to review leave of their own team member
+            detail = await leave_service.get_leave_detail(
+                db=db,
+                company_id=current_user["company_id"],
+                leave_id=leave_id,
+            )
+            is_member = await leave_service.is_team_member(
+                db=db,
+                company_id=current_user["company_id"],
+                manager_id=current_user["user_id"],
+                target_user_id=detail.user.id,
+            )
+            if not is_member:
+                raise PermissionError("Admin, HR, or team lead access required")
+
         return await leave_service.review_leave(
             db=db,
             company_id=current_user["company_id"],

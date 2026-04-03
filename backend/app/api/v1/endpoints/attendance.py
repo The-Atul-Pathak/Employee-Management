@@ -44,11 +44,14 @@ async def get_daily_attendance(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[dict, Depends(get_current_user)],
     target_date: date = Query(..., alias="date"),
+    scope: str = Query(default="all"),
 ) -> AttendanceListResponse:
-    return await attendance_service.get_daily_attendance(
+    return await attendance_service.get_daily_attendance_scoped(
         db=db,
         company_id=current_user["company_id"],
         target_date=target_date,
+        scope=scope,
+        manager_id=current_user["user_id"] if scope == "team" else None,
     )
 
 
@@ -105,11 +108,14 @@ async def get_daily_summary(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[dict, Depends(get_current_user)],
     target_date: date = Query(..., alias="date"),
+    scope: str = Query(default="all"),
 ) -> AttendanceSummaryResponse:
-    return await attendance_service.get_daily_summary(
+    return await attendance_service.get_daily_summary_scoped(
         db=db,
         company_id=current_user["company_id"],
         target_date=target_date,
+        scope=scope,
+        manager_id=current_user["user_id"] if scope == "team" else None,
     )
 
 
